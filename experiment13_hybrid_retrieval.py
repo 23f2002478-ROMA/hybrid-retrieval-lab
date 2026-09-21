@@ -8,6 +8,7 @@ Sections: Theory, Simulation, Quiz, Report Generation.
 import os
 import re
 import math
+import html as html_lib
 from collections import Counter
 from datetime import datetime
 
@@ -19,6 +20,31 @@ from fpdf import FPDF
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
 from sklearn.metrics.pairwise import cosine_similarity
+
+
+# 0. COLOR PALETTE (validated categorical set: blue / orange / aqua)
+
+COLORS = {
+    "bm25": "#2a78d6",
+    "sem": "#eb6834",
+    "hyb": "#1baf7a",
+    "surface": "#fcfcfb",
+    "ink": "#0b0b0b",
+    "ink2": "#52514e",
+    "muted": "#898781",
+    "grid": "#e1e0d9",
+    "good": "#0ca30c",
+    "warn": "#fab219",
+    "serious": "#ec835a",
+}
+
+HEATMAP_SCALE = [
+    [0.0, "#cde2fb"],
+    [0.25, "#9ec5f4"],
+    [0.5, "#3987e5"],
+    [0.75, "#1c5cab"],
+    [1.0, "#0d366b"],
+]
 
 
 # 1. EXPERIMENT CONFIGURATION AND EDUCATIONAL CONTENT
@@ -34,67 +60,27 @@ EXPERIMENT_CONFIG = {
     ]
 }
 
-THEORY_CONTENT = {
-    "background": """
-### Lexical retrieval: BM25
-BM25 ranks a document D for a query Q by summing, over each query term t,
-an inverse-document-frequency weight times a saturated term-frequency term:
+THEORY_PROCEDURE = [
+    "Step 1: Read the theory below and note the BM25 and hybrid-score formulas.",
+    "Step 2: Go to the Simulation section and enter or pick a query.",
+    "Step 3: Set alpha, k1 and b, and choose how many top results (k) to inspect.",
+    "Step 4: Compare the BM25-only, semantic-only and hybrid rankings and their overlap.",
+    "Step 5: Click 'Record Current Trial' to log the configuration and outcome.",
+    "Step 6: Repeat for at least 3-4 different queries and alpha values.",
+    "Step 7: Complete the assessment Quiz.",
+    "Step 8: Open Report Generation, fill in your details, and download the PDF report."
+]
 
-score(D, Q) = sum over t in Q of  IDF(t) * (f(t,D) * (k1+1)) / (f(t,D) + k1 * (1 - b + b * |D| / avgdl))
-
-- f(t,D) is how many times term t appears in document D.
-- IDF(t) is high for rare terms and low for common terms.
-- k1 controls how quickly extra occurrences of a term stop adding score (term-frequency saturation).
-- b controls how much longer documents are penalized (length normalization).
-
-BM25 only ever "sees" the exact tokens in the query, so it misses documents
-that are relevant but worded differently (e.g. query "vector representation
-of words" vs a document about "word embeddings").
-
-### Semantic retrieval: embeddings
-Semantic search represents both the query and every document as a dense
-vector, then ranks documents by cosine similarity of their vector to the
-query vector. Vectors that are close in this space tend to be close in
-meaning, even with little or no word overlap.
-
-This lab builds its embeddings with Latent Semantic Analysis (LSA): a
-TF-IDF matrix of the corpus is projected onto its top singular directions
-(TruncatedSVD). This keeps the simulator small and self-contained while
-still producing genuine semantic vectors, in the same spirit as larger
-neural embedding models.
-
-### Hybrid combination
-Both score types are first min-max normalized to [0, 1] so neither scale
-dominates, then blended with a single weight alpha:
-
-hybrid_score(D) = alpha * semantic_score(D) + (1 - alpha) * bm25_score(D)
-
-- alpha = 0 reduces to pure BM25.
-- alpha = 1 reduces to pure semantic search.
-- Intermediate alpha lets exact keyword matches and semantically related
-  documents both contribute to the final ranking.
-    """,
-    "procedure": [
-        "Step 1: Read the theory below and note the BM25 and hybrid-score formulas.",
-        "Step 2: Go to the Simulation section and enter or pick a query.",
-        "Step 3: Set alpha, k1 and b, and choose how many top results (k) to inspect.",
-        "Step 4: Compare the BM25-only, semantic-only and hybrid rankings and their overlap.",
-        "Step 5: Click 'Record Current Trial' to log the configuration and outcome.",
-        "Step 6: Repeat for at least 3-4 different queries and alpha values.",
-        "Step 7: Complete the assessment Quiz.",
-        "Step 8: Open Report Generation, fill in your details, and download the PDF report."
-    ],
-    "key_terms": {
-        "BM25": "Lexical ranking function based on term frequency and inverse document frequency.",
-        "TF / IDF": "Term frequency: how often a term occurs in a document. Inverse document frequency: how rare a term is across the corpus.",
-        "k1": "BM25 parameter controlling how fast repeated term occurrences saturate.",
-        "b": "BM25 parameter controlling how strongly document length is penalized.",
-        "Embedding": "A dense numeric vector representation of text that captures meaning.",
-        "LSA": "Latent Semantic Analysis: embeddings derived from an SVD of the TF-IDF matrix.",
-        "Cosine similarity": "Similarity between two vectors based on the angle between them.",
-        "Alpha": "Hybrid weight that blends the semantic score and the BM25 score.",
-        "Overlap@k": "Fraction of the top-k hybrid results that are also in the top-k BM25-only results."
-    }
+KEY_TERMS = {
+    "BM25": "Lexical ranking function based on term frequency and inverse document frequency.",
+    "TF / IDF": "Term frequency: how often a term occurs in a document. Inverse document frequency: how rare a term is across the corpus.",
+    "k1": "BM25 parameter controlling how fast repeated term occurrences saturate.",
+    "b": "BM25 parameter controlling how strongly document length is penalized.",
+    "Embedding": "A dense numeric vector representation of text that captures meaning.",
+    "LSA": "Latent Semantic Analysis: embeddings derived from an SVD of the TF-IDF matrix.",
+    "Cosine similarity": "Similarity between two vectors based on the angle between them.",
+    "Alpha": "Hybrid weight that blends the semantic score and the BM25 score.",
+    "Overlap@k": "Fraction of the top-k hybrid results that are also in the top-k BM25-only results."
 }
 
 CORPUS = [
@@ -461,7 +447,83 @@ def run_hybrid_search(query, alpha, k1, b, top_k, idx):
     }
 
 
-# 3. LAB REPORT PDF EXPORTER
+def explain_ranking(bm_v, sem_v):
+    if bm_v >= 0.66 and sem_v < 0.4:
+        return "Driven mainly by exact keyword overlap (high BM25, low semantic)."
+    if sem_v >= 0.66 and bm_v < 0.4:
+        return "Driven mainly by semantic similarity, despite limited exact word overlap."
+    if bm_v >= 0.5 and sem_v >= 0.5:
+        return "Supported by both exact keyword overlap and semantic similarity."
+    return "Weak signal from both methods relative to other documents in this corpus."
+
+
+def highlight_terms(text, query):
+    q_terms = set(tokenize(query))
+    escaped = html_lib.escape(text)
+
+    def repl(m):
+        word = m.group(0)
+        if word.lower() in q_terms:
+            return (
+                "<mark style=\"background:" + COLORS["hyb"] + "33; color:" + COLORS["ink"] +
+                "; padding:0 2px; border-radius:3px;\">" + word + "</mark>"
+            )
+        return word
+
+    return re.sub(r"[A-Za-z0-9]+", repl, escaped)
+
+
+# 3. UI HELPERS (STAT CARDS, LEGEND DOTS, CSS)
+
+def inject_css():
+    st.markdown(
+        """
+        <style>
+        .block-container { padding-top: 2rem; }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+def stat_card(label, value, color, sub=""):
+    sub_html = ""
+    if sub:
+        sub_html = "<div style='font-size:0.75rem;color:" + COLORS["muted"] + ";margin-top:2px;'>" + sub + "</div>"
+    return (
+        "<div style='border-left:4px solid " + color + "; background:" + COLORS["surface"] + "; "
+        "border-radius:6px; padding:10px 14px; box-shadow:0 1px 2px rgba(11,11,11,0.10);'>"
+        "<div style='font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em; color:" + COLORS["muted"] + ";'>"
+        + label + "</div>"
+        "<div style='font-size:1.3rem; font-weight:700; color:" + COLORS["ink"] + "; margin-top:2px;'>"
+        + str(value) + "</div>" + sub_html + "</div>"
+    )
+
+
+def legend_dots(pairs):
+    parts = []
+    for label, color in pairs:
+        parts.append(
+            "<span style='display:inline-flex;align-items:center;gap:6px;margin-right:18px;'>"
+            "<span style='width:10px;height:10px;border-radius:50%;background:" + color +
+            ";display:inline-block;'></span>"
+            "<span style='font-size:0.85rem;color:" + COLORS["ink2"] + ";'>" + label + "</span></span>"
+        )
+    return "<div style='margin:2px 0 12px 0;'>" + "".join(parts) + "</div>"
+
+
+def chart_layout_kwargs(title):
+    return dict(
+        title=dict(text=title, font=dict(color=COLORS["ink"], size=15)),
+        plot_bgcolor=COLORS["surface"],
+        paper_bgcolor=COLORS["surface"],
+        font=dict(color=COLORS["ink2"]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0, font=dict(color=COLORS["ink"])),
+        margin=dict(l=20, r=20, t=60, b=20)
+    )
+
+
+# 4. LAB REPORT PDF EXPORTER
 
 class LabReportPDF(FPDF):
     def footer(self):
@@ -590,25 +652,75 @@ def generate_pdf_report(student_name, student_id, date_str, trials_df,
     return bytes(pdf.output())
 
 
-# 4. SECTION RENDERERS: THEORY, SIMULATION, QUIZ, REPORT
+# 5. SECTION RENDERERS: THEORY, SIMULATION, QUIZ, REPORT
 
 def render_theory_section():
-    st.header("Theoretical Framework & Background")
-    st.markdown(THEORY_CONTENT["background"])
+    st.header("Theoretical Framework and Background")
 
+    st.markdown("### Lexical retrieval: BM25")
+    st.write(
+        "BM25 ranks a document D for a query Q by summing, over every query term t, an "
+        "inverse-document-frequency weight times a saturated term-frequency term:"
+    )
+    st.latex(
+        r"\text{score}(D, Q) = \sum_{t \,\in\, Q} \text{IDF}(t) \cdot "
+        r"\frac{f(t, D)\,(k_1 + 1)}{f(t, D) + k_1 \left(1 - b + b \cdot \dfrac{|D|}{\text{avgdl}}\right)}"
+    )
+    st.write("where the inverse document frequency term is:")
+    st.latex(r"\text{IDF}(t) = \ln\!\left(\frac{N - n_t + 0.5}{n_t + 0.5} + 1\right)")
+    st.markdown(
+        "- f(t, D) is how many times term t appears in document D.\n"
+        "- IDF(t) is high for rare terms and low for common terms.\n"
+        "- k1 controls how quickly extra occurrences of a term stop adding score (term-frequency saturation).\n"
+        "- b controls how much longer documents are penalized (length normalization)."
+    )
+    st.info(
+        "BM25 only ever sees the exact tokens in the query, so it misses documents that are relevant "
+        "but worded differently (e.g. query 'vector representation of words' vs a document about "
+        "'word embeddings')."
+    )
+
+    st.markdown("### Semantic retrieval: embeddings")
+    st.write(
+        "Semantic search represents both the query and every document as a dense vector, then ranks "
+        "documents by cosine similarity of their vector to the query vector:"
+    )
+    st.latex(r"\text{sim}(q, d) = \frac{\vec{q} \cdot \vec{d}}{\lVert \vec{q} \rVert \; \lVert \vec{d} \rVert}")
+    st.write(
+        "Vectors that are close in this space tend to be close in meaning, even with little or no word "
+        "overlap. This lab builds its embeddings with Latent Semantic Analysis (LSA): a TF-IDF matrix of "
+        "the corpus is projected onto its top singular directions (TruncatedSVD). This keeps the simulator "
+        "small and self-contained while still producing genuine semantic vectors, in the same spirit as "
+        "larger neural embedding models."
+    )
+
+    st.markdown("### Hybrid combination")
+    st.write(
+        "Both score types are first min-max normalized to [0, 1] so neither scale dominates, then "
+        "blended with a single weight alpha:"
+    )
+    st.latex(r"\text{hybrid}(D) = \alpha \cdot \text{sem}(D) \; + \; (1 - \alpha) \cdot \text{bm25}(D)")
+    st.markdown(
+        "- alpha = 0 reduces to pure BM25.\n"
+        "- alpha = 1 reduces to pure semantic search.\n"
+        "- Intermediate alpha lets exact keyword matches and semantically related documents both "
+        "contribute to the final ranking."
+    )
+
+    st.divider()
     st.subheader("Learning Objectives")
     for i, obj in enumerate(EXPERIMENT_CONFIG["objectives"]):
         st.write(f"- Goal {i+1}: {obj}")
 
     st.divider()
     st.subheader("Experimental Procedure")
-    for step in THEORY_CONTENT["procedure"]:
+    for step in THEORY_PROCEDURE:
         st.write(f"- {step}")
 
     st.divider()
     with st.expander("Key Terminology & Variable Reference"):
         var_df = pd.DataFrame(
-            list(THEORY_CONTENT["key_terms"].items()),
+            list(KEY_TERMS.items()),
             columns=["Term / Variable", "Definition & Role"]
         )
         st.table(var_df)
@@ -641,14 +753,18 @@ def render_simulation_section():
     with col1:
         alpha = st.slider("Alpha (semantic weight)", cfg["alpha_min"], cfg["alpha_max"],
                            cfg["alpha_default"], cfg["alpha_step"])
+        st.caption(f"Currently {alpha*100:.0f}% semantic, {(1-alpha)*100:.0f}% keyword.")
     with col2:
         k1 = st.slider("k1 (term-frequency saturation)", cfg["k1_min"], cfg["k1_max"],
                         cfg["k1_default"], cfg["k1_step"])
+        st.caption("Higher k1 lets repeated query words keep adding score for longer.")
     with col3:
         b = st.slider("b (length normalization)", cfg["b_min"], cfg["b_max"],
                        cfg["b_default"], cfg["b_step"])
+        st.caption("Higher b penalizes longer-than-average documents more heavily.")
     with col4:
         top_k = st.selectbox("Top-k", options=cfg["topk_options"], index=1)
+        st.caption("How many top-ranked documents to inspect below.")
 
     if not query.strip():
         st.warning("Enter a query to run the search.")
@@ -657,35 +773,113 @@ def render_simulation_section():
     res = run_hybrid_search(query, alpha, k1, b, top_k, idx)
 
     st.divider()
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.metric("Top BM25-only doc", res["top_bm25_doc"])
-    with m2:
-        st.metric("Top semantic-only doc", res["top_semantic_doc"])
-    with m3:
-        st.metric("Top hybrid doc", res["top_hybrid_doc"])
-    with m4:
-        st.metric(f"Overlap@{top_k}", f"{res['overlap']*100:.0f}%")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(stat_card("Top BM25-only doc", res["top_bm25_doc"], COLORS["bm25"]), unsafe_allow_html=True)
+    with c2:
+        st.markdown(stat_card("Top semantic-only doc", res["top_semantic_doc"], COLORS["sem"]), unsafe_allow_html=True)
+    with c3:
+        st.markdown(stat_card("Top hybrid doc", res["top_hybrid_doc"], COLORS["hyb"]), unsafe_allow_html=True)
+    with c4:
+        ov = res["overlap"]
+        ov_color = COLORS["good"] if ov >= 0.6 else (COLORS["warn"] if ov >= 0.34 else COLORS["serious"])
+        st.markdown(
+            stat_card(f"Overlap@{top_k}", f"{ov*100:.0f}%", ov_color, "hybrid vs BM25-only top-k agreement"),
+            unsafe_allow_html=True
+        )
 
+    st.divider()
     st.subheader("Score Comparison for Top Results")
+    st.markdown(
+        legend_dots([("BM25", COLORS["bm25"]), ("Semantic", COLORS["sem"]), ("Hybrid", COLORS["hyb"])]),
+        unsafe_allow_html=True
+    )
     show_ids = [idx["doc_ids"][i] for i in res["order"][:top_k]]
     show_idx = [idx["doc_ids"].index(d) for d in show_ids]
     fig = go.Figure()
-    fig.add_trace(go.Bar(name="BM25", x=show_ids, y=[res["bm_n"][i] for i in show_idx]))
-    fig.add_trace(go.Bar(name="Semantic", x=show_ids, y=[res["sem_n"][i] for i in show_idx]))
-    fig.add_trace(go.Bar(name="Hybrid", x=show_ids, y=[res["hyb"][i] for i in show_idx]))
+    fig.add_trace(go.Bar(name="BM25", x=show_ids, y=[res["bm_n"][i] for i in show_idx], marker_color=COLORS["bm25"]))
+    fig.add_trace(go.Bar(name="Semantic", x=show_ids, y=[res["sem_n"][i] for i in show_idx], marker_color=COLORS["sem"]))
+    fig.add_trace(go.Bar(name="Hybrid", x=show_ids, y=[res["hyb"][i] for i in show_idx], marker_color=COLORS["hyb"]))
     fig.update_layout(
         barmode="group",
-        title="Normalized BM25 vs Semantic vs Hybrid Scores",
-        xaxis_title="Document",
-        yaxis_title="Normalized Score",
+        xaxis=dict(title="Document", color=COLORS["ink2"], gridcolor=COLORS["grid"], linecolor=COLORS["muted"]),
+        yaxis=dict(title="Normalized Score", color=COLORS["ink2"], gridcolor=COLORS["grid"],
+                   linecolor=COLORS["muted"], range=[0, 1.05]),
+        hovermode="x unified",
         height=380,
-        margin=dict(l=20, r=20, t=40, b=20)
+        **chart_layout_kwargs("Normalized BM25 vs Semantic vs Hybrid Scores")
     )
     st.plotly_chart(fig, use_container_width=True)
 
+    st.subheader("How the Ranking Shifts with Alpha")
+    st.caption("Lines trace the hybrid score of the current top documents as alpha sweeps from 0 (pure BM25) to 1 (pure semantic). The dashed line marks your current alpha.")
+    sweep_line_colors = [COLORS["bm25"], COLORS["sem"], COLORS["hyb"]]
+    top_for_sweep = res["order"][:min(3, top_k)]
+    alphas = np.linspace(0, 1, 21)
+    fig2 = go.Figure()
+    for j, i in enumerate(top_for_sweep):
+        ys = [a * res["sem_n"][i] + (1 - a) * res["bm_n"][i] for a in alphas]
+        fig2.add_trace(go.Scatter(
+            x=alphas, y=ys, mode="lines", name=idx["doc_ids"][i],
+            line=dict(width=2.5, color=sweep_line_colors[j % 3])
+        ))
+    fig2.add_vline(x=alpha, line_dash="dash", line_color=COLORS["muted"])
+    fig2.update_layout(
+        xaxis=dict(title="alpha (semantic weight)", color=COLORS["ink2"], gridcolor=COLORS["grid"]),
+        yaxis=dict(title="Hybrid score", color=COLORS["ink2"], gridcolor=COLORS["grid"], range=[0, 1.05]),
+        height=340,
+        **chart_layout_kwargs("Hybrid score sensitivity to alpha (current top documents)")
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+
+    st.subheader("Score Landscape Across the Full Corpus")
+    st.caption("Every document in the corpus, scored by all three methods. Hover a cell for the exact value.")
+    z = np.array([res["bm_n"], res["sem_n"], res["hyb"]]).T
+    fig3 = go.Figure(data=go.Heatmap(
+        z=z,
+        x=["BM25", "Semantic", "Hybrid"],
+        y=idx["doc_ids"],
+        colorscale=HEATMAP_SCALE,
+        zmin=0, zmax=1,
+        colorbar=dict(title="Score", tickfont=dict(color=COLORS["ink2"])),
+        hovertemplate="Doc %{y}<br>%{x}: %{z:.3f}<extra></extra>"
+    ))
+    fig3.update_layout(
+        xaxis=dict(color=COLORS["ink2"]),
+        yaxis=dict(color=COLORS["ink2"], autorange="reversed"),
+        height=420,
+        **chart_layout_kwargs("Normalized score per document and method")
+    )
+    st.plotly_chart(fig3, use_container_width=True)
+
     st.subheader("Ranked Hybrid Results")
-    st.dataframe(res["results_df"], hide_index=True, use_container_width=True)
+    st.dataframe(
+        res["results_df"],
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "BM25 Score": st.column_config.NumberColumn("BM25 Score", format="%.3f"),
+            "Semantic Score": st.column_config.NumberColumn("Semantic Score", format="%.3f"),
+            "Hybrid Score": st.column_config.ProgressColumn(
+                "Hybrid Score", min_value=0.0, max_value=1.0, format="%.3f"
+            ),
+        }
+    )
+
+    st.subheader("Why These Ranked Where They Did")
+    for rank, i in enumerate(res["order"][:min(3, top_k)], start=1):
+        snippet_html = highlight_terms(idx["doc_texts"][i][:220] + "...", query)
+        note = explain_ranking(res["bm_n"][i], res["sem_n"][i])
+        card = (
+            "<div style='border:1px solid " + COLORS["grid"] + "; border-radius:8px; padding:12px 14px; "
+            "margin-bottom:10px; background:" + COLORS["surface"] + ";'>"
+            "<div style='font-weight:700; color:" + COLORS["ink"] + ";'>#" + str(rank) + " - " + idx["doc_ids"][i] + "</div>"
+            "<div style='font-size:0.88rem; color:" + COLORS["ink2"] + "; margin:6px 0; line-height:1.5;'>"
+            + snippet_html + "</div>"
+            "<div style='font-size:0.8rem; color:" + COLORS["muted"] + "; font-style:italic;'>" + note + "</div>"
+            "</div>"
+        )
+        st.markdown(card, unsafe_allow_html=True)
 
     st.divider()
     st.subheader("Experimental Data Log Book")
@@ -866,7 +1060,7 @@ def render_report_section():
         )
 
 
-# 5. MAIN ENTRYPOINT AND NAVIGATION
+# 6. MAIN ENTRYPOINT AND NAVIGATION
 
 def init_session_state():
     if "trials" not in st.session_state:
@@ -894,6 +1088,7 @@ def main():
         layout="wide"
     )
 
+    inject_css()
     init_session_state()
 
     st.title(EXPERIMENT_CONFIG["title"])
